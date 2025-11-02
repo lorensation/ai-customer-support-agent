@@ -5,11 +5,14 @@ A production-ready AI customer support agent powered by **Retrieval-Augmented Ge
 ## 🌟 Features
 
 - **Semantic Search**: Vector similarity search using Supabase pgvector
+- **Intent Classification**: AI-powered query categorization for improved retrieval accuracy
+- **Metadata Filtering**: Smart document filtering based on query intent and categories
 - **RAG Pipeline**: Context-aware responses based on your knowledge base
 - **REST API**: Simple `/api/ask` endpoint for easy integration
 - **Modular Architecture**: Clean separation of concerns for maintainability
 - **Production Ready**: Error handling, logging, and validation
 - **OpenAI Integration**: GPT-4 for responses, text-embedding-3-small for vectors
+- **Fallback Mechanism**: Automatic retry without filtering if no results found
 - **Easy Deployment**: Ready for Vercel, Railway, or any Node.js host
 
 ## 📋 Table of Contents
@@ -30,24 +33,29 @@ A production-ready AI customer support agent powered by **Retrieval-Augmented Ge
 ```
 User Query → API Endpoint → RAG Service
                               ↓
-                    1. Generate Query Embedding
+                    1. Classify Intent (Category Detection)
                               ↓
-                    2. Search Vector Database (Supabase)
+                    2. Generate Query Embedding
                               ↓
-                    3. Retrieve Top K Documents
+                    3. Search Vector Database (Supabase)
+                       with Metadata Filtering
                               ↓
-                    4. Build Context + Prompt
+                    4. Retrieve Top K Documents
+                       (Fallback if no results)
                               ↓
-                    5. Generate Response (OpenAI GPT-4)
+                    5. Build Context + Prompt
                               ↓
-                    6. Return Answer + Sources
+                    6. Generate Response (OpenAI GPT-4)
+                              ↓
+                    7. Return Answer + Sources
 ```
 
 ### Core Components
 
 - **`config.js`**: Centralized configuration and client initialization
 - **`ingestDocuments.js`**: ETL pipeline for knowledge base documents
-- **`retrieval.js`**: Vector similarity search with Supabase pgvector
+- **`intentClassifier.js`**: AI-powered query classification and category mapping
+- **`retrieval.js`**: Vector similarity search with metadata filtering
 - **`ragService.js`**: RAG orchestration and LLM integration
 - **`server.js`**: Express API server with endpoints
 
@@ -119,9 +127,11 @@ SIMILARITY_THRESHOLD=0.7
 3. Paste and execute
 
 This creates:
-- `documents` table with pgvector support
-- `match_documents()` function for similarity search
-- Necessary indexes and triggers
+- `customer-support-docs` table with pgvector support
+- `match_customer_support_docs()` function for similarity search with metadata filtering
+- GIN index on metadata JSONB field for efficient filtering
+- IVFFlat index on embeddings for fast vector search
+- Automatic timestamp triggers and Row Level Security (RLS)
 
 📖 See [database/SETUP.md](database/SETUP.md) for detailed instructions.
 
@@ -136,14 +146,20 @@ In Supabase dashboard: **Settings** → **API**
 
 ### 1. Add Knowledge Base Documents
 
-Add your documentation files to the `/docs` folder:
+Add your documentation files to the `/docs` folder. For optimal intent classification, use these recommended filenames:
+
 ```
 docs/
-├── product-info.md
-├── faq.md
-├── quick-start.md
-└── policies.txt
+├── api-documentation.md    # API docs, endpoints, authentication
+├── billing.md              # Pricing, payments, subscriptions
+├── faq.md                  # General questions, account info
+├── product-info.md         # Product features, capabilities
+├── quick-start.md          # Getting started guides
+├── security-privacy.md     # Security, compliance, privacy
+└── troubleshooting.md      # Technical issues, errors
 ```
+
+**Note**: The intent classifier maps queries to these specific filenames. Using other filenames will still work, but queries will be treated as "general" without category filtering.
 
 Supported formats: `.txt`, `.md`, `.json`
 
@@ -176,6 +192,23 @@ You should see:
 ✅ Server started successfully!
 🌐 Server running on: http://localhost:3000
 💡 Ready to handle customer queries!
+```
+
+When processing queries, you'll see detailed logs including intent classification:
+```
+💬 Processing query: "How do I reset my password?"
+🎯 Classifying user intent...
+   - Intent classified as: troubleshooting
+   - Will filter by source: troubleshooting.md
+🔍 Searching for: "How do I reset my password?"
+   - Generating query embedding...
+   - Query embedded successfully
+   - Querying Supabase for top 3 matches...
+   ✅ Found 2 relevant document(s)
+      1. [Similarity: 0.892] troubleshooting.md
+      2. [Similarity: 0.854] troubleshooting.md
+🤖 Generating AI response...
+✅ Response generated successfully
 ```
 
 ### 4. Test the API
@@ -228,13 +261,19 @@ Submit a customer support query.
   "sources": [
     {
       "id": 1,
-      "filename": "faq.md",
+      "filename": "billing.md",
       "similarity": "0.892",
       "excerpt": "### How do I upgrade my plan?\nGo to Settings → Billing..."
+    },
+    {
+      "id": 2,
+      "filename": "billing.md",
+      "similarity": "0.854",
+      "excerpt": "### Subscription Plans\nWe offer three tiers: Basic, Pro, and Enterprise..."
     }
   ],
   "metadata": {
-    "documentsRetrieved": 3,
+    "documentsRetrieved": 2,
     "model": "gpt-4-turbo-preview",
     "timestamp": "2025-11-02T10:30:00.000Z"
   }
@@ -274,6 +313,41 @@ API documentation endpoint.
 }
 ```
 
+## 🎯 Intent Classification
+
+The system now includes an intelligent intent classification layer that improves retrieval accuracy by categorizing user queries before performing vector search.
+
+### How It Works
+
+1. **Query Analysis**: When a user submits a question, the intent classifier analyzes it using OpenAI
+2. **Category Mapping**: The query is mapped to one of seven document categories:
+   - `api-documentation` - API endpoints, authentication, webhooks, rate limits
+   - `billing` - Pricing, payments, invoices, subscriptions, refunds
+   - `faq` - General questions, account management, features
+   - `product-info` - Product features, capabilities, pricing tiers
+   - `quick-start` - Getting started, onboarding, initial setup
+   - `security-privacy` - Security, encryption, compliance, GDPR
+   - `troubleshooting` - Technical issues, errors, bugs
+   - `general` - Queries spanning multiple categories
+3. **Filtered Search**: Vector search is performed with metadata filtering for the identified category
+4. **Automatic Fallback**: If no results are found, the system automatically retries without filtering
+
+### Benefits
+
+- **Higher Precision**: Returns more relevant documents by filtering out unrelated content
+- **Faster Responses**: Reduced search space means quicker retrieval
+- **Better Context**: More focused context leads to more accurate AI responses
+- **Graceful Degradation**: Fallback mechanism ensures answers even when classification is uncertain
+
+### Configuration
+
+Intent classification is enabled by default. To disable it for specific queries:
+
+```javascript
+// In your code
+retrieveRelevantDocuments(query, topK, threshold, useIntentFiltering = false);
+```
+
 ## 📁 Project Structure
 
 ```
@@ -283,14 +357,19 @@ ai-customer-support-agent/
 │   ├── server.js                 # Express API server
 │   ├── services/
 │   │   ├── ingestDocuments.js    # Document ingestion pipeline
+│   │   ├── intentClassifier.js   # Intent classification & filtering
 │   │   ├── retrieval.js          # Vector similarity search
 │   │   └── ragService.js         # RAG orchestration
 │   └── scripts/
 │       └── ingest.js             # CLI ingestion script
 ├── docs/                         # Knowledge base documents
-│   ├── product-info.md
+│   ├── api-documentation.md
+│   ├── billing.md
 │   ├── faq.md
-│   └── quick-start.md
+│   ├── product-info.md
+│   ├── quick-start.md
+│   ├── security-privacy.md
+│   └── troubleshooting.md
 ├── database/
 │   ├── schema.sql                # Supabase database schema
 │   └── SETUP.md                  # Database setup guide
@@ -359,6 +438,20 @@ pm2 start src/server.js --name "ai-support-agent"
 - Lower `SIMILARITY_THRESHOLD` in `.env`
 - Add more documents to knowledge base
 - Check document quality and relevance
+- Try disabling intent filtering temporarily to test: `useIntentFiltering = false`
+- Ensure document filenames match the categories in `intentClassifier.js`
+
+### Intent classification failing
+- Check OpenAI API key is valid and has credits
+- Review logs for classification errors
+- System automatically falls back to unfiltered search if classification fails
+- Verify `CLASSIFICATION_SYSTEM_PROMPT` in `intentClassifier.js` is appropriate
+
+### Wrong category detected
+- Lower classification temperature in `intentClassifier.js` (currently 0.3)
+- Update `CLASSIFICATION_SYSTEM_PROMPT` with clearer category descriptions
+- Add more specific keywords for each category
+- Consider adding example queries to the classification prompt
 
 ## 🔧 Customization
 
@@ -367,6 +460,32 @@ Edit `SYSTEM_PROMPT` in `src/services/ragService.js`
 
 ### Adjust Search Parameters
 Change `TOP_K_RESULTS` and `SIMILARITY_THRESHOLD` in `.env`
+
+### Customize Intent Categories
+Add or modify categories in `src/services/intentClassifier.js`:
+```javascript
+export const DOCUMENT_CATEGORIES = {
+  API_DOCUMENTATION: 'api-documentation.md',
+  BILLING: 'billing.md',
+  // Add your custom categories here
+  CUSTOM_CATEGORY: 'custom-docs.md',
+};
+```
+
+Update the classification prompt to include new categories.
+
+### Adjust Classification Temperature
+Lower temperature for more consistent classification, higher for more flexibility:
+```javascript
+// In intentClassifier.js
+temperature: 0.3, // Range: 0.0 to 2.0
+```
+
+### Disable Intent Classification
+Set `useIntentFiltering` to `false` in retrieval calls:
+```javascript
+retrieveRelevantDocuments(query, topK, threshold, false);
+```
 
 ### Add Document Chunking
 Use `chunkText()` function in `src/services/ingestDocuments.js` for large documents
@@ -384,20 +503,4 @@ Contributions are welcome! Please:
 
 ## 📄 License
 
-MIT License - see LICENSE file for details
-
-## 🙏 Acknowledgments
-
-- OpenAI for GPT-4 and embeddings
-- Supabase for pgvector hosting
-- Express.js for the API framework
-
-## 📞 Support
-
-- 📧 Email: support@yourdomain.com
-- 💬 Discord: [your-discord-link]
-- 📚 Documentation: [your-docs-link]
-
----
-
-**Built with ❤️ for better customer support**
+Apache License - see LICENSE file for details
